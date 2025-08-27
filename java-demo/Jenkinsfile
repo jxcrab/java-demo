@@ -5,19 +5,13 @@ pipeline {
         HARBOR_REGISTRY = 'http://47.242.64.151:8080' 
         HARBOR_PROJECT = 'java-demo'  // Harbor中的项目名称
         APP_NAME = 'dev'  // 应用名称，对应Harbor中的镜像仓库名
-        IMAGE_VERSION = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
+        IMAGE_VERSION = "${params.DEPLOY_ENV}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
         SONAR_URL = 'http://47.242.64.151:9000'
         
         // 组合完整镜像标签（Harbor格式：仓库地址/项目名/应用名:版本）
         FULL_IMAGE_TAG = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
     }
     parameters {
-        gitParameter(
-            name: 'BRANCH',
-            type: 'PT_BRANCH',
-            defaultValue: 'master',
-            description: '选择构建的分支'
-        )
         choice(
             name: 'DEPLOY_ENV',
             choices: ['dev', 'test', 'prod'],
@@ -27,8 +21,8 @@ pipeline {
     stages {
         stage("拉取代码") {
             steps {
-                echo "拉取代码: ${GIT_URL} 分支: ${BRANCH}"
-                git url: "${GIT_URL}", branch: "${BRANCH}", credentialsId: 'github-pat'
+                echo "拉取代码: ${GIT_URL}"
+                git url: "${GIT_URL}", branch: 'master', credentialsId: 'github-pat'
             }
         }
         
