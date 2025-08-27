@@ -1,0 +1,154 @@
+pipeline {
+    agent any
+    environment {
+        GIT_URL = 'https://github.com/jxcrab/java-demo.git' 
+        HARBOR_REGISTRY = 'http://47.242.64.151:8080' 
+        HARBOR_PROJECT = 'java-demo'  // Harbor中的项目名称
+        APP_NAME = 'dev'  // 应用名称，对应Harbor中的镜像仓库名
+        IMAGE_VERSION = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
+        SONAR_URL = 'http://47.242.64.151:9000'
+        
+        // 组合完整镜像标签（Harbor格式：仓库地址/项目名/应用名:版本）
+        FULL_IMAGE_TAG = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
+    }
+    parameters {
+        gitParameter(
+            name: 'BRANCH',
+            type: 'PT_BRANCH',
+            defaultValue: 'master',
+            description: '选择构建的分支'
+        )
+        choice(
+            name: 'DEPLOY_ENV',
+            choices: ['dev', 'test', 'prod'],
+            description: '选择部署的环境'
+        )
+    }
+    stages {
+        stage("拉取代码") {
+            steps {
+                echo "拉取代码: ${GIT_URL} 分支: ${BRANCH}"
+                git url: "${GIT_URL}", branch: "${BRANCH}", credentialsId: 'github-pat'
+            }
+        }
+        
+        stage("开始编译和单元测试") {
+            steps {
+                withMaven(maven: 'maven-3.6.3', jdk: 'jdk-17') {
+                    sh 'mvn clean package -DskipTests=false'
+                }
+            }
+            post {
+                failure {
+                    echo "单元测试失败"
+                    error "单元测试失败，流水线终止"
+                }
+            }
+        }
+        
+        stage("开始代码扫描") {
+            steps {
+                withSonarQubeEnv('SonarQube servers') {
+                   sh 'mvn sonar:sonar -Dsonar.token=sqa_3e227f9cf405ee054374aaf7138baf59ad04cc03'
+                }
+            }
+        }
+        
+        stage("构建镜像") {
+            steps {
+                echo "构建镜像: ${FULL_IMAGE_TAG}"
+                sh "docker build -t ${FULL_IMAGE_TAG} ."
+            }
+        }
+        
+        stage("推送镜像到Harbor私有仓库") {
+            steps {
+                // 3. Harbor认证（使用Jenkins中配置的Harbor凭证）
+                withCredentials([usernamePassword(
+                    credentialsId: 'harbor-credentials',
+                    passwordVariable: 'HARBOR_PWD', 
+                    usernameVariable: 'HARBOR_USER'
+                )]) {
+                    // Harbor默认需要HTTPS，若使用HTTP需在Docker配置中添加信任
+                    sh "docker login ${HARBOR_REGISTRY} -u ${HARBOR_USER} -p ${HARBOR_PWD}"
+                    sh "docker push ${FULL_IMAGE_TAG}"
+                    sh "docker logout ${HARBOR_REGISTRY}"
+                }
+            }
+            post {
+                always {
+                    sh "docker rmi ${FULL_IMAGE_TAG} || true"
+                }
+            }
+        }
+        
+        stage('Deploy to K8s') {
+            steps {
+                echo "部署到${DEPLOY_ENV}环境"
+                script {
+                    // 5. 根据环境选择对应的kubeconfig
+                    if (DEPLOY_ENV == 'dev') {
+                        KUBE_CONFIG = credentials('k8s-dev-config')
+                    } else if (DEPLOY_ENV == 'test') {
+                        KUBE_CONFIG = credentials('k8s-test-config')
+                    } else if (DEPLOY_ENV == 'prod') {
+                        // 生产环境增加人工审批
+                        input message: "确认部署到生产环境？当前镜像版本：${IMAGE_VERSION}", ok: "确认部署"
+                        KUBE_CONFIG = credentials('k8s-prod-config')
+                    }
+                    env.KUBE_CONFIG_PATH = kubeConfigPath
+                }
+                
+                // 6. 替换K8s部署文件中的镜像标签并部署
+                sh """
+                    sed -i "s/{{FULL_IMAGE_TAG}}/${FULL_IMAGE_TAG}/g" k8s/deploy.yaml
+                    export KUBECONFIG=${env.KUBE_CONFIG_PATH}
+                    kubectl apply -f k8s/deploy.yaml -n ${DEPLOY_ENV}
+                    kubectl rollout status deployment/${APP_NAME} -n ${DEPLOY_ENV}
+                """
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo "执行健康检查"
+                sh """
+                    export KUBECONFIG=${KUBE_CONFIG}
+                    # 等待Pod就绪
+                    kubectl wait --for=condition=Ready pods -l app=${APP_NAME} -n ${DEPLOY_ENV} --timeout=300s
+                    
+                    # 查看日志和健康状态
+                    POD_NAME=\$(kubectl get pods -n ${DEPLOY_ENV} -l app=${APP_NAME} -o jsonpath='{.items[0].metadata.name}')
+                    kubectl logs \${POD_NAME} -n ${DEPLOY_ENV} --tail=50
+                    
+                    # 调用健康检查接口
+                    SVC_IP=\$(kubectl get svc ${APP_NAME}-svc -n ${DEPLOY_ENV} -o jsonpath='{.spec.clusterIP}')
+                    curl -s http://\${SVC_IP}/actuator/health | jq . || echo "健康检查接口调用失败"
+                """
+            }
+            post {
+                failure {
+                    echo "健康检查失败，执行回滚"
+                    sh """
+                        export KUBECONFIG=${KUBE_CONFIG}
+                        kubectl rollout undo deployment/${APP_NAME} -n ${DEPLOY_ENV}
+                    """
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()  // 清理工作空间
+        }
+        success {
+            echo "流水线执行成功，最终镜像：${FULL_IMAGE_TAG}"
+            // 可选：添加通知（如钉钉、邮件）
+            // dingtalkSend(robot: 'dingtalk-robot', message: "构建成功：${FULL_IMAGE_TAG}")
+        }
+        failure {
+            echo "流水线执行失败"
+            // 可选：添加失败通知
+        }
+    }
+}
