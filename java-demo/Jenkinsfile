@@ -2,15 +2,16 @@ pipeline {
     agent any
     environment {
         GIT_URL = 'https://github.com/jxcrab/java-demo.git' 
-        HARBOR_REGISTRY = 'http://47.238.232.147/:8080' 
+        HARBOR_REGISTRY = 'http://47.238.232.147:8080' 
         HARBOR_PROJECT = 'java-demo'  // Harbor中的项目名称
         APP_NAME = 'dev'  // 应用名称，对应Harbor中的镜像仓库名
         DEPLOY_ENV = 'dev' 
         IMAGE_VERSION = "${DEPLOY_ENV}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
-        SONAR_URL = 'http://47.238.232.147/:9000'
+        SONAR_URL = 'http://47.238.232.147:9000'
         
         // 组合完整镜像标签（Harbor格式：仓库地址/项目名/应用名:版本）
         FULL_IMAGE_TAG = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
+        KUBE_CONFIG_CONTENT = ''
     }
     stages {
         stage("拉取代码") {
@@ -73,11 +74,12 @@ pipeline {
         stage('Deploy to K8s') {
             steps {
                 echo "部署到${DEPLOY_ENV}环境,使用镜像：${FULL_IMAGE_TAG}"
-                        KUBE_CONFIG = credentials('k8s-prod-config')
-                    }
-                    env.KUBE_CONFIG_PATH = "${env.WORKSPACE}/kubeconfig-dev"
-                    writeFile file: env.KUBE_CONFIG_PATH, text: KUBE_CONFIG
+                script{
+                        KUBE_CONFIG = credentials('k8s-config')
+                        env.KUBE_CONFIG_PATH = "${env.WORKSPACE}/kubeconfig-dev"
+                        writeFile file: env.KUBE_CONFIG_PATH, text: KUBE_CONFIG
                 }
+                
                 
                 sh """
                     # 替换deploy.yaml中的{{FULL_IMAGE_TAG}}为实际镜像标签
@@ -96,7 +98,7 @@ pipeline {
             steps {
                 echo "执行健康检查"
                 sh """
-                    export KUBECONFIG=${KUBE_CONFIG}
+                    export KUBECONFIG=${env.KUBE_CONFIG_PATH}
                     # 等待Pod就绪
                     kubectl wait --for=condition=Ready pods -l app=${APP_NAME} -n ${DEPLOY_ENV} --timeout=300s
                     
@@ -113,7 +115,7 @@ pipeline {
                 failure {
                     echo "健康检查失败，执行回滚"
                     sh """
-                        export KUBECONFIG=${KUBE_CONFIG}
+                        export KUBECONFIG=${env.KUBE_CONFIG_PATH}
                         kubectl rollout undo deployment/${APP_NAME} -n ${DEPLOY_ENV}
                     """
                 }
