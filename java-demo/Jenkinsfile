@@ -2,21 +2,15 @@ pipeline {
     agent any
     environment {
         GIT_URL = 'https://github.com/jxcrab/java-demo.git' 
-        HARBOR_REGISTRY = 'http://47.242.64.151:8080' 
+        HARBOR_REGISTRY = 'http://47.238.232.147/:8080' 
         HARBOR_PROJECT = 'java-demo'  // Harbor中的项目名称
         APP_NAME = 'dev'  // 应用名称，对应Harbor中的镜像仓库名
-        IMAGE_VERSION = "${params.DEPLOY_ENV}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
-        SONAR_URL = 'http://47.242.64.151:9000'
+        DEPLOY_ENV = 'dev' 
+        IMAGE_VERSION = "${DEPLOY_ENV}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
+        SONAR_URL = 'http://47.238.232.147/:9000'
         
         // 组合完整镜像标签（Harbor格式：仓库地址/项目名/应用名:版本）
         FULL_IMAGE_TAG = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
-    }
-    parameters {
-        choice(
-            name: 'DEPLOY_ENV',
-            choices: ['dev', 'test', 'prod'],
-            description: '选择部署的环境'
-        )
     }
     stages {
         stage("拉取代码") {
@@ -29,7 +23,7 @@ pipeline {
         stage("开始编译和单元测试") {
             steps {
                 withMaven(maven: 'maven-3.6.3', jdk: 'jdk-17') {
-                    sh 'mvn clean package -DskipTests=false'
+                    sh 'mvn -f java-demo/pom.xml clean package -DskipTests=false'
                 }
             }
             post {
@@ -78,26 +72,21 @@ pipeline {
         
         stage('Deploy to K8s') {
             steps {
-                echo "部署到${DEPLOY_ENV}环境"
-                script {
-                    // 5. 根据环境选择对应的kubeconfig
-                    if (DEPLOY_ENV == 'dev') {
-                        KUBE_CONFIG = credentials('k8s-dev-config')
-                    } else if (DEPLOY_ENV == 'test') {
-                        KUBE_CONFIG = credentials('k8s-test-config')
-                    } else if (DEPLOY_ENV == 'prod') {
-                        // 生产环境增加人工审批
-                        input message: "确认部署到生产环境？当前镜像版本：${IMAGE_VERSION}", ok: "确认部署"
+                echo "部署到${DEPLOY_ENV}环境,使用镜像：${FULL_IMAGE_TAG}"
                         KUBE_CONFIG = credentials('k8s-prod-config')
                     }
-                    env.KUBE_CONFIG_PATH = kubeConfigPath
+                    env.KUBE_CONFIG_PATH = "${env.WORKSPACE}/kubeconfig-dev"
+                    writeFile file: env.KUBE_CONFIG_PATH, text: KUBE_CONFIG
                 }
                 
-                // 6. 替换K8s部署文件中的镜像标签并部署
                 sh """
+                    # 替换deploy.yaml中的{{FULL_IMAGE_TAG}}为实际镜像标签
                     sed -i "s/{{FULL_IMAGE_TAG}}/${FULL_IMAGE_TAG}/g" k8s/deploy.yaml
+                    # 设置KUBECONFIG环境变量（指定dev环境配置）
                     export KUBECONFIG=${env.KUBE_CONFIG_PATH}
+                    # 在dev命名空间部署应用
                     kubectl apply -f k8s/deploy.yaml -n ${DEPLOY_ENV}
+                    # 等待部署完成（确保Pod启动成功）
                     kubectl rollout status deployment/${APP_NAME} -n ${DEPLOY_ENV}
                 """
             }
