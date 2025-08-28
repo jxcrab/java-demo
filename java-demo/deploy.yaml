@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-demo  # 部署名称，需唯一
+  namespace: dev   # 目标命名空间（与环境匹配，如 dev/test/prod）
+spec:
+  replicas: 1      # 副本数，根据需求调整
+  selector:
+    matchLabels:
+      app: java-demo  # 标签选择器，需与下面的 template.metadata.labels 一致
+  template:
+    metadata:
+      labels:
+        app: java-demo  #  Pod 标签，用于关联 Service
+    spec:
+      containers:
+      - name: java-demo  # 容器名称
+        image: {{FULL_IMAGE_TAG}}  # 镜像标签占位符（关键！Jenkins 会替换为实际镜像）
+        ports:
+        - containerPort: 8080  # 容器暴露端口（需与应用内部端口一致）
+        resources:  # 资源限制（可选，根据需求配置）
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:  # 存活探针（可选，用于健康检查）
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:  # 就绪探针（可选）
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
