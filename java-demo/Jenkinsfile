@@ -9,8 +9,8 @@ pipeline {
         IMAGE_VERSION = "${DEPLOY_ENV}-${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0,8)}"  // 镜像版本号
         SONAR_URL = 'http://47.238.232.147:9000'
         
-        // 组合完整镜像标签（Harbor格式：仓库地址/项目名/应用名:版本）
-        FULL_IMAGE_TAG = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
+        // 组合完整镜像标签（Harbor格式：项目名/应用名:版本）
+        FULL_IMAGE_TAG = "${HARBOR_PROJECT}/${APP_NAME}:${IMAGE_VERSION}"
         KUBE_CONFIG_CONTENT = ''
     }
     stages {
@@ -38,7 +38,7 @@ pipeline {
         stage("开始代码扫描") {
             steps {
                 withSonarQubeEnv('SonarQube servers') {
-                   sh 'mvn sonar:sonar -Dsonar.token=sqa_3e227f9cf405ee054374aaf7138baf59ad04cc03'
+                   sh '/opt/apache-maven-3.6.3/bin/mvn -f java-demo/pom.xml sonar:sonar -Dsonar.token=sqa_3e227f9cf405ee054374aaf7138baf59ad04cc03'
                 }
             }
         }
@@ -46,7 +46,7 @@ pipeline {
         stage("构建镜像") {
             steps {
                 echo "构建镜像: ${FULL_IMAGE_TAG}"
-                sh "docker build -t ${FULL_IMAGE_TAG} ."
+                sh "docker build -t ${FULL_IMAGE_TAG} ./java-demo"
             }
         }
         
